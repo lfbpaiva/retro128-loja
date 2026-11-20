@@ -51,6 +51,50 @@ jobs:
       - name: Configurar Pages
         uses: actions/configure-pages@v5
 
+      # Barreira de qualidade: se algo abaixo falhar, o deploy para aqui
+      # e o que esta no ar continua no ar.
+      - name: Validar a release (capas, config e precos)
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          erros = []
+          cfg = json.load(open("config/app-config.json", encoding="utf-8"))
+          cat = json.load(open(cfg["catalogoUrl"], encoding="utf-8"))
+          pasta = cfg["pastaCapas"]
+          ids = {j["id"] for j in cat["jogos"]}
+          for j in cat["jogos"]:
+              caminho = os.path.join(pasta, j["capa"])
+              if not os.path.isfile(caminho):
+                  erros.append(f"capa nao encontrada: {caminho} ({j['id']})")
+          promocoes = cfg.get("blackFriday", {}).get("promocoes", {})
+          for pid, p in promocoes.items():
+              if pid not in ids:
+                  erros.append(f"promocao para jogo que nao existe no catalogo: {pid}")
+              if not 0 < p.get("percentual", 0) < 100:
+                  erros.append(f"percentual invalido em {pid}")
+          for e in erros:
+              print(f"::error::{e}")
+          if erros:
+              print(f"Release bloqueada: {len(erros)} problema(s) encontrado(s)")
+              sys.exit(1)
+          print(f"Capas ok: {len(cat['jogos'])} arquivos encontrados em {pasta}")
+          PY
+          # teste de fumaca da regra de preco: todo jogo do catalogo precisa ter preco valido
+          if [ -f js/precos.js ]; then
+            node -e '
+              const fs = require("fs"), vm = require("vm");
+              const ctx = {}; vm.createContext(ctx);
+              vm.runInContext(fs.readFileSync("js/precos.js", "utf8"), ctx);
+              const cfg = JSON.parse(fs.readFileSync("config/app-config.json", "utf8"));
+              const cat = JSON.parse(fs.readFileSync(cfg.catalogoUrl, "utf8"));
+              for (const j of cat.jogos) {
+                const p = ctx.precoComDesconto(j, cfg);
+                if (!(p > 0 && p <= j.preco)) throw new Error("preco invalido para " + j.id + ": " + p);
+              }
+              console.log("Precos ok: " + cat.jogos.length + " jogos calculados sem erro");
+            '
+          fi
+
       - name: Empacotar o site
         uses: actions/upload-pages-artifact@v3
         with:
